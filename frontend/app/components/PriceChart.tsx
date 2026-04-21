@@ -1,13 +1,13 @@
 "use client";
 
 import {
-  LineChart,
+  CartesianGrid,
   Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
-  CartesianGrid,
-  ResponsiveContainer
 } from "recharts";
 import { PriceRecord } from "../types";
 
@@ -15,56 +15,113 @@ interface PriceChartProps {
   data: PriceRecord[];
 }
 
+interface ChartPoint {
+  displayTime: string;
+  price: number;
+  startTime: string;
+  endTime: string;
+}
+
+interface DotProps {
+  cx?: number;
+  cy?: number;
+  payload?: ChartPoint;
+}
+
 export default function PriceChart({ data }: PriceChartProps) {
-  const prices = data.map(d => d.price);
-  const avgPrice = prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : 0;
+  const prices = data.map((entry) => entry.price);
+  const avgPrice = prices.length
+    ? prices.reduce((sum, value) => sum + value, 0) / prices.length
+    : 0;
 
-  const chartData = data.map((item) => ({
-    timestamp: new Date(item.start_time).getTime(),
-    displayTime: new Date(item.start_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    price: item.price
-  }));
+  const now = new Date();
 
-  // Saatleri 2 saat aralıklarla gösteriyoruz (0,2,4,...22)
-  const tickHours = Array.from({ length: 12 }, (_, i) =>
-    `${(i*2).toString().padStart(2,"0")}:00`
-  );
+  const chartData: ChartPoint[] = data.map((item) => {
+    const startDate = new Date(item.start_time);
+
+    return {
+      displayTime: startDate.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }),
+      price: item.price,
+      startTime: item.start_time,
+      endTime: item.end_time,
+    };
+  });
 
   return (
-    <div className="w-full h-[400px]">
+    <div className="h-[360px] w-full sm:h-[420px]">
       <ResponsiveContainer>
-        <LineChart data={chartData} margin={{ top: 20, right: 40, left: 40, bottom: 20 }}>
-          <CartesianGrid stroke="#AAAAAA" strokeDasharray="3 3" opacity={0.1} />
-
+        <LineChart
+          data={chartData}
+          margin={{ top: 16, right: 12, left: -12, bottom: 8 }}
+        >
+          <CartesianGrid
+            stroke="rgba(15, 23, 42, 0.08)"
+            strokeDasharray="4 4"
+          />
           <XAxis
             dataKey="displayTime"
-            type="category"
-            ticks={tickHours}  // 2 saat aralıkları
-            tick={{ fill: "#888888", fontSize: 12 }}
-          />
-
-          <YAxis
-            tick={{ fill: "#888888", fontSize: 12 }}
-          />
-
-          <Tooltip
-            contentStyle={{ backgroundColor: "#fff", borderRadius: "10px", border: "1px solid #E5E5E5" }}
-            formatter={(value: number) => {
-              let color = "#888888";
-              if (value > avgPrice) color = "red";
-              else if (value < avgPrice) color = "blue";
-              return <span style={{ color }}>{value.toFixed(3)} SEK</span>;
+            tick={{ fill: "#52606d", fontSize: 12 }}
+            tickFormatter={(value) => {
+              const hour = Number(value.split(":")[0]);
+              return hour % 4 === 0 ? value : "";
             }}
-            labelFormatter={(t) => t} 
           />
+          <YAxis tick={{ fill: "#52606d", fontSize: 12 }} />
+          <Tooltip
+            contentStyle={{
+              backgroundColor: "#ffffff",
+              borderRadius: "16px",
+              border: "1px solid rgba(148, 163, 184, 0.25)",
+              boxShadow: "0 12px 40px rgba(15, 23, 42, 0.12)",
+            }}
+            formatter={(value) => {
+              const numericValue =
+                typeof value === "number" ? value : Number(value ?? 0);
 
+              const color =
+                numericValue > avgPrice
+                  ? "#dc2626"
+                  : numericValue < avgPrice
+                  ? "#0369a1"
+                  : "#334155";
+
+              return (
+                <span style={{ color }}>
+                  {numericValue.toFixed(3)} SEK/kWh
+                </span>
+              );
+            }}
+          />
           <Line
             type="monotone"
             dataKey="price"
-            stroke="#555555"
-            strokeWidth={2}
-            dot={{ stroke: "#555555", strokeWidth: 2, r: 3 }}
-            activeDot={{ r: 5, stroke: "#000", strokeWidth: 2 }}
+            stroke="#0f766e"
+            strokeWidth={3}
+            dot={({ cx, cy, payload }: DotProps) => {
+              if (cx === undefined || cy === undefined || !payload) {
+                return null;
+              }
+
+              const start = new Date(payload.startTime);
+              const end = new Date(payload.endTime);
+              const isCurrentPoint = now >= start && now < end;
+
+              return (
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={isCurrentPoint ? 5 : 2.5}
+                  fill={isCurrentPoint ? "#dc2626" : "#ffffff"}
+                  stroke={isCurrentPoint ? "#dc2626" : "#0f766e"}
+                  strokeWidth={isCurrentPoint ? 2 : 1.5}
+                />
+              );
+            }}
+            activeDot={{ r: 6, stroke: "#0f172a", strokeWidth: 2 }}
           />
         </LineChart>
       </ResponsiveContainer>

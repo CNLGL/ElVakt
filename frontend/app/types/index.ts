@@ -3,6 +3,7 @@ export interface PriceRecord {
   region: string;
   price: number;
   start_time: string;
+  end_time: string;
 }
 
 export interface PriceResponse {
