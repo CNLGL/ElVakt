@@ -42,6 +42,7 @@ export default function SiteHeader() {
   function handleLogout() {
     localStorage.removeItem("elvakt_user");
     setCurrentUser(null);
+    window.dispatchEvent(new Event("elvakt-auth-changed"));
     router.push("/");
     router.refresh();
   }

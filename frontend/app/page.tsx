@@ -1,9 +1,23 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { MapPin, Search, TrendingDown, TrendingUp } from "lucide-react";
+import {
+  Cpu,
+  MapPin,
+  Plus,
+  Search,
+  TrendingDown,
+  TrendingUp,
+} from "lucide-react";
 import PriceChart from "./components/PriceChart";
-import { PriceResponse, PriceRecord } from "./types";
+import DeviceChart from "./components/DeviceChart";
+import {
+  Device,
+  DeviceReadingsResponse,
+  PriceRecord,
+  PriceResponse,
+  SavedLocation,
+} from "./types";
 
 const API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
@@ -17,6 +31,8 @@ interface AuthUser {
   is_active: boolean;
   created_at: string;
 }
+
+type ViewMode = "location" | "device";
 
 function formatPrice(value: number) {
   return `${value.toFixed(2)} SEK`;
@@ -32,6 +48,31 @@ export default function Home() {
   );
 
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+
+  const [locations, setLocations] = useState<SavedLocation[]>([]);
+  const [selectedLocationId, setSelectedLocationId] = useState<number | null>(
+    null
+  );
+  const [locationLabel, setLocationLabel] = useState("");
+  const [locationPostcode, setLocationPostcode] = useState("");
+  const [locationError, setLocationError] = useState("");
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [showAddLocation, setShowAddLocation] = useState(false);
+
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<number | null>(null);
+  const [deviceReadings, setDeviceReadings] =
+    useState<DeviceReadingsResponse | null>(null);
+  const [deviceName, setDeviceName] = useState("");
+  const [deviceType, setDeviceType] = useState("smart_plug");
+  const [deviceLocationId, setDeviceLocationId] = useState("");
+  const [deviceError, setDeviceError] = useState("");
+  const [deviceLoading, setDeviceLoading] = useState(false);
+  const [showAddDevice, setShowAddDevice] = useState(false);
+
+  const [viewMode, setViewMode] = useState<ViewMode>("location");
+
+  const selectedDevice = devices.find((device) => device.id === selectedDeviceId);
 
   const groupedPrices = useMemo(() => {
     if (!data) {
@@ -58,8 +99,6 @@ export default function Home() {
 
   const todayData = groupedPrices.today;
   const tomorrowData = groupedPrices.tomorrow;
-  const selectedChartData =
-    selectedChart === "today" ? todayData : tomorrowData;
 
   const stats = useMemo(() => {
     const prices = todayData.map((entry) => entry.price);
@@ -93,25 +132,91 @@ export default function Home() {
     const payload: PriceResponse = await response.json();
     setData(payload);
     setSelectedChart("today");
+    setViewMode("location");
+    setSelectedDeviceId(null);
   }
 
-  async function fetchPricesForUser(user: AuthUser) {
-    const response = await fetch(`${API_BASE_URL}/users/${user.id}/prices`, {
+  async function fetchUserLocations(user: AuthUser) {
+    const response = await fetch(`${API_BASE_URL}/users/${user.id}/locations`, {
       headers: { Accept: "application/json" },
     });
 
     if (!response.ok) {
-      const fallbackMessage = "Kullanici fiyat verisi alinamadi.";
-      const payload = (await response.json().catch(() => null)) as
-        | { detail?: string }
-        | null;
-      throw new Error(payload?.detail ?? fallbackMessage);
+      throw new Error("Saved locations could not be loaded.");
     }
 
-    const payload: PriceResponse = await response.json();
-    setData(payload);
-    setPostcode(user.postcode);
-    setSelectedChart("today");
+    const payload: SavedLocation[] = await response.json();
+    setLocations(payload);
+
+    const defaultLocation = payload.find((location) => location.is_default);
+    const firstLocation = defaultLocation ?? payload[0];
+
+    if (firstLocation) {
+      setSelectedLocationId(firstLocation.id);
+      setPostcode(firstLocation.postcode);
+      await fetchPricesForPostcode(firstLocation.postcode);
+    }
+  }
+
+  async function fetchUserDevices(user: AuthUser) {
+    const response = await fetch(`${API_BASE_URL}/users/${user.id}/devices`, {
+      headers: { Accept: "application/json" },
+    });
+
+    if (!response.ok) {
+      throw new Error("Devices could not be loaded.");
+    }
+
+    const payload: Device[] = await response.json();
+    setDevices(payload);
+  }
+
+  async function fetchDeviceReadings(device: Device) {
+    if (!currentUser) return;
+
+    setDeviceLoading(true);
+    setDeviceError("");
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/users/${currentUser.id}/devices/${device.id}/readings?period=day`,
+        { headers: { Accept: "application/json" } }
+      );
+
+      if (!response.ok) {
+        throw new Error("Device readings could not be loaded.");
+      }
+
+      const payload: DeviceReadingsResponse = await response.json();
+
+      if (payload.readings.length === 0) {
+        const seedResponse = await fetch(
+          `${API_BASE_URL}/users/${currentUser.id}/devices/${device.id}/test-readings`,
+          {
+            method: "POST",
+            headers: { Accept: "application/json" },
+          }
+        );
+
+        if (!seedResponse.ok) {
+          throw new Error("Test device data could not be created.");
+        }
+
+        const seededPayload: DeviceReadingsResponse = await seedResponse.json();
+        setDeviceReadings(seededPayload);
+      } else {
+        setDeviceReadings(payload);
+      }
+
+      setSelectedDeviceId(device.id);
+      setViewMode("device");
+    } catch (error) {
+      setDeviceError(
+        error instanceof Error ? error.message : "Device data could not be loaded."
+      );
+    } finally {
+      setDeviceLoading(false);
+    }
   }
 
   async function handleSearch() {
@@ -125,6 +230,7 @@ export default function Home() {
 
     try {
       await fetchPricesForPostcode(postcode);
+      setSelectedLocationId(null);
     } catch (error) {
       setData(null);
       setErrorMessage(
@@ -135,23 +241,253 @@ export default function Home() {
     }
   }
 
+  async function handleSelectLocation(location: SavedLocation) {
+    setLoading(true);
+    setErrorMessage("");
+    setSelectedLocationId(location.id);
+    setPostcode(location.postcode);
+
+    try {
+      await fetchPricesForPostcode(location.postcode);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Lokasyon verisi alinamadi."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleAddLocation() {
+    if (!currentUser) return;
+
+    const cleanPostcode = locationPostcode.trim().replace(/\D/g, "");
+
+    if (!locationLabel.trim()) {
+      setLocationError("Location name is required.");
+      return;
+    }
+
+    if (cleanPostcode.length !== 5) {
+      setLocationError("Please enter a valid 5-digit postcode.");
+      return;
+    }
+
+    setLocationLoading(true);
+    setLocationError("");
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/users/${currentUser.id}/locations`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            label: locationLabel,
+            postcode: cleanPostcode,
+            is_default: locations.length === 0,
+          }),
+        }
+      );
+
+      const payload = (await response.json().catch(() => null)) as
+        | SavedLocation
+        | { detail?: string }
+        | null;
+
+      if (!response.ok) {
+        throw new Error(
+          payload && "detail" in payload
+            ? payload.detail ?? "Location could not be saved."
+            : "Location could not be saved."
+        );
+      }
+
+      const location = payload as SavedLocation;
+      setLocations((current) => [...current, location]);
+      setLocationLabel("");
+      setLocationPostcode("");
+      setShowAddLocation(false);
+      await handleSelectLocation(location);
+    } catch (error) {
+      setLocationError(
+        error instanceof Error ? error.message : "Location could not be saved."
+      );
+    } finally {
+      setLocationLoading(false);
+    }
+  }
+
+  async function handleDeleteLocation(location: SavedLocation) {
+    if (!currentUser) return;
+
+    const confirmed = window.confirm(`Delete ${location.label}?`);
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/users/${currentUser.id}/locations/${location.id}`,
+        {
+          method: "DELETE",
+          headers: { Accept: "application/json" },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Location could not be deleted.");
+      }
+
+      setLocations((current) => current.filter((item) => item.id !== location.id));
+
+      if (selectedLocationId === location.id) {
+        setSelectedLocationId(null);
+        setData(null);
+      }
+    } catch (error) {
+      setLocationError(
+        error instanceof Error ? error.message : "Location could not be deleted."
+      );
+    }
+  }
+
+  async function handleAddDevice() {
+    if (!currentUser) return;
+
+    if (!deviceName.trim()) {
+      setDeviceError("Device name is required.");
+      return;
+    }
+
+    setDeviceLoading(true);
+    setDeviceError("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/users/${currentUser.id}/devices`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          name: deviceName,
+          device_type: deviceType,
+          saved_location_id: deviceLocationId ? Number(deviceLocationId) : null,
+          tuya_device_id: null,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | Device
+        | { detail?: string }
+        | null;
+
+      if (!response.ok) {
+        throw new Error(
+          payload && "detail" in payload
+            ? payload.detail ?? "Device could not be saved."
+            : "Device could not be saved."
+        );
+      }
+
+      const device = payload as Device;
+      setDevices((current) => [...current, device]);
+      setDeviceName("");
+      setDeviceType("smart_plug");
+      setDeviceLocationId("");
+      setShowAddDevice(false);
+      await fetchDeviceReadings(device);
+    } catch (error) {
+      setDeviceError(
+        error instanceof Error ? error.message : "Device could not be saved."
+      );
+    } finally {
+      setDeviceLoading(false);
+    }
+  }
+
+  async function handleDeleteDevice(device: Device) {
+    if (!currentUser) return;
+
+    const confirmed = window.confirm(`Delete ${device.name}?`);
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/users/${currentUser.id}/devices/${device.id}`,
+        {
+          method: "DELETE",
+          headers: { Accept: "application/json" },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Device could not be deleted.");
+      }
+
+      setDevices((current) => current.filter((item) => item.id !== device.id));
+
+      if (selectedDeviceId === device.id) {
+        setSelectedDeviceId(null);
+        setDeviceReadings(null);
+        setViewMode("location");
+      }
+    } catch (error) {
+      setDeviceError(
+        error instanceof Error ? error.message : "Device could not be deleted."
+      );
+    }
+  }
+
   useEffect(() => {
     setErrorMessage("");
   }, [postcode]);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem("elvakt_user");
-    if (!storedUser) return;
+    function syncUser() {
+      const storedUser = localStorage.getItem("elvakt_user");
 
-    try {
-      const user = JSON.parse(storedUser) as AuthUser;
-      setCurrentUser(user);
-      fetchPricesForUser(user).catch(() => {
+      if (!storedUser) {
+        setCurrentUser(null);
+        setLocations([]);
+        setDevices([]);
+        setSelectedLocationId(null);
+        setSelectedDeviceId(null);
+        setShowAddLocation(false);
+        setShowAddDevice(false);
+        setViewMode("location");
+        return;
+      }
+
+      try {
+        const user = JSON.parse(storedUser) as AuthUser;
+        setCurrentUser(user);
+        fetchUserLocations(user).catch(() => {
+          fetchPricesForPostcode(user.postcode).catch(() => null);
+        });
+        fetchUserDevices(user).catch(() => null);
+      } catch {
         localStorage.removeItem("elvakt_user");
-      });
-    } catch {
-      localStorage.removeItem("elvakt_user");
+        setCurrentUser(null);
+        setLocations([]);
+        setDevices([]);
+        setSelectedLocationId(null);
+        setSelectedDeviceId(null);
+        setShowAddLocation(false);
+        setShowAddDevice(false);
+        setViewMode("location");
+      }
     }
+
+    syncUser();
+
+    window.addEventListener("elvakt-auth-changed", syncUser);
+
+    return () => {
+      window.removeEventListener("elvakt-auth-changed", syncUser);
+    };
   }, []);
 
   return (
@@ -174,7 +510,7 @@ export default function Home() {
           </p>
         </header>
 
-        <section className="mx-auto mb-14 max-w-2xl">
+        <section className="mx-auto mb-8 max-w-2xl">
           <div className="rounded-full border border-gray-200 bg-white px-4 py-3 shadow-sm">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <div className="flex flex-1 items-center gap-3">
@@ -210,9 +546,184 @@ export default function Home() {
           <div className="mt-3 min-h-6 text-center text-sm text-rose-600">
             {errorMessage}
           </div>
+
+          {currentUser ? (
+            <div className="mt-4 space-y-4">
+              <div>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {locations.map((location) => (
+                    <div
+                      key={location.id}
+                      className={`inline-flex items-center overflow-hidden rounded-full text-sm shadow-sm transition ${
+                        viewMode === "location" && selectedLocationId === location.id
+                          ? "bg-black text-white"
+                          : "bg-white text-gray-600 ring-1 ring-black/5"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => handleSelectLocation(location)}
+                        className="px-4 py-2 hover:opacity-80"
+                      >
+                        {location.label} · {location.postcode}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteLocation(location)}
+                        className={`px-3 py-2 ${
+                          viewMode === "location" && selectedLocationId === location.id
+                            ? "text-white/70 hover:text-white"
+                            : "text-gray-400 hover:text-rose-500"
+                        }`}
+                        aria-label={`Delete ${location.label}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+
+                  <button
+                    type="button"
+                    onClick={() => setShowAddLocation((value) => !value)}
+                    className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm text-gray-600 shadow-sm ring-1 ring-black/5 transition hover:bg-gray-50"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add location
+                  </button>
+                </div>
+
+                {showAddLocation ? (
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                    <input
+                      type="text"
+                      placeholder="Name, for example Work"
+                      value={locationLabel}
+                      onChange={(event) => setLocationLabel(event.target.value)}
+                      className="flex-1 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm outline-none"
+                    />
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={5}
+                      placeholder="Postcode"
+                      value={locationPostcode}
+                      onChange={(event) =>
+                        setLocationPostcode(event.target.value.replace(/\D/g, ""))
+                      }
+                      className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm outline-none sm:w-36"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddLocation}
+                      disabled={locationLoading}
+                      className="rounded-full bg-black px-5 py-2 text-sm text-white transition hover:bg-black/85 disabled:bg-gray-400"
+                    >
+                      {locationLoading ? "Saving..." : "Save"}
+                    </button>
+                  </div>
+                ) : null}
+
+                <div className="mt-2 min-h-5 text-center text-sm text-rose-600">
+                  {locationError}
+                </div>
+              </div>
+
+              <div>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {devices.map((device) => (
+                    <div
+                      key={device.id}
+                      className={`inline-flex items-center overflow-hidden rounded-full text-sm shadow-sm transition ${
+                        viewMode === "device" && selectedDeviceId === device.id
+                          ? "bg-black text-white"
+                          : "bg-white text-gray-600 ring-1 ring-black/5"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => fetchDeviceReadings(device)}
+                        className="inline-flex items-center gap-2 px-4 py-2 hover:opacity-80"
+                      >
+                        <Cpu className="h-4 w-4" />
+                        {device.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteDevice(device)}
+                        className={`px-3 py-2 ${
+                          viewMode === "device" && selectedDeviceId === device.id
+                            ? "text-white/70 hover:text-white"
+                            : "text-gray-400 hover:text-rose-500"
+                        }`}
+                        aria-label={`Delete ${device.name}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+
+                  <button
+                    type="button"
+                    onClick={() => setShowAddDevice((value) => !value)}
+                    className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm text-gray-600 shadow-sm ring-1 ring-black/5 transition hover:bg-gray-50"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add device
+                  </button>
+                </div>
+
+                {showAddDevice ? (
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                    <input
+                      type="text"
+                      placeholder="Device name"
+                      value={deviceName}
+                      onChange={(event) => setDeviceName(event.target.value)}
+                      className="flex-1 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm outline-none"
+                    />
+                    <select
+                      value={deviceType}
+                      onChange={(event) => setDeviceType(event.target.value)}
+                      className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm outline-none"
+                    >
+                      <option value="smart_plug">Smart plug</option>
+                      <option value="ev_charger">EV charger</option>
+                      <option value="lamp">Lamp</option>
+                      <option value="heater">Heater</option>
+                      <option value="appliance">Appliance</option>
+                    </select>
+                    <select
+                      value={deviceLocationId}
+                      onChange={(event) => setDeviceLocationId(event.target.value)}
+                      className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm outline-none"
+                    >
+                      <option value="">No location</option>
+                      {locations.map((location) => (
+                        <option key={location.id} value={location.id}>
+                          {location.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={handleAddDevice}
+                      disabled={deviceLoading}
+                      className="rounded-full bg-black px-5 py-2 text-sm text-white transition hover:bg-black/85 disabled:bg-gray-400"
+                    >
+                      {deviceLoading ? "Saving..." : "Save"}
+                    </button>
+                  </div>
+                ) : null}
+
+                <div className="mt-2 min-h-5 text-center text-sm text-rose-600">
+                  {deviceError}
+                </div>
+              </div>
+            </div>
+          ) : null}
         </section>
 
-        {!data && (
+        {!data && viewMode === "location" && (
           <section className="mb-16 grid gap-4 md:grid-cols-3">
             <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-black/5">
               <p className="text-[11px] uppercase tracking-[0.3em] text-gray-400">
@@ -244,7 +755,7 @@ export default function Home() {
           </section>
         )}
 
-        {data && (
+        {data && viewMode === "location" && (
           <section className="space-y-8">
             <div className="grid gap-4 md:grid-cols-4">
               <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-black/5">
@@ -346,6 +857,61 @@ export default function Home() {
                   </div>
                 </div>
               )}
+            </div>
+          </section>
+        )}
+
+        {viewMode === "device" && selectedDevice && deviceReadings && (
+          <section className="space-y-8">
+            <div className="grid gap-4 md:grid-cols-4">
+              <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+                <p className="text-[11px] uppercase tracking-[0.3em] text-gray-400">
+                  Device
+                </p>
+                <p className="mt-3 text-2xl font-light text-gray-900">
+                  {selectedDevice.name}
+                </p>
+              </div>
+
+              <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+                <p className="text-[11px] uppercase tracking-[0.3em] text-gray-400">
+                  Energy today
+                </p>
+                <p className="mt-3 text-2xl font-light text-gray-900">
+                  {deviceReadings.summary.total_energy_kwh.toFixed(2)} kWh
+                </p>
+              </div>
+
+              <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+                <p className="text-[11px] uppercase tracking-[0.3em] text-gray-400">
+                  Cost today
+                </p>
+                <p className="mt-3 text-2xl font-light text-gray-900">
+                  {deviceReadings.summary.total_cost_sek.toFixed(2)} SEK
+                </p>
+              </div>
+
+              <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+                <p className="text-[11px] uppercase tracking-[0.3em] text-gray-400">
+                  Average power
+                </p>
+                <p className="mt-3 text-2xl font-light text-gray-900">
+                  {deviceReadings.summary.average_power_watts.toFixed(0)} W
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-[2rem] bg-white p-5 shadow-sm ring-1 ring-black/5 md:p-8">
+              <div className="mb-6">
+                <p className="text-[11px] uppercase tracking-[0.35em] text-gray-400">
+                  Device consumption
+                </p>
+                <h2 className="mt-2 text-2xl font-light text-gray-900">
+                  {selectedDevice.name} usage overview
+                </h2>
+              </div>
+
+              <DeviceChart data={deviceReadings.readings} />
             </div>
           </section>
         )}
