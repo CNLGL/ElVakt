@@ -28,6 +28,11 @@ interface DotProps {
   payload?: ChartPoint;
 }
 
+function formatPrice(value: unknown) {
+  const numericValue = typeof value === "number" ? value : Number(value ?? 0);
+  return numericValue.toFixed(5);
+}
+
 export default function PriceChart({ data }: PriceChartProps) {
   const prices = data.map((entry) => entry.price);
   const avgPrice = prices.length
@@ -40,10 +45,11 @@ export default function PriceChart({ data }: PriceChartProps) {
     const startDate = new Date(item.start_time);
 
     return {
-      displayTime: startDate.toLocaleTimeString([], {
+      displayTime: startDate.toLocaleTimeString("sv-SE", {
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
+        timeZone: "Europe/Stockholm",
       }),
       price: item.price,
       startTime: item.start_time,
@@ -62,15 +68,21 @@ export default function PriceChart({ data }: PriceChartProps) {
             stroke="rgba(15, 23, 42, 0.08)"
             strokeDasharray="4 4"
           />
+
           <XAxis
             dataKey="displayTime"
             tick={{ fill: "#52606d", fontSize: 12 }}
             tickFormatter={(value) => {
-              const hour = Number(value.split(":")[0]);
-              return hour % 4 === 0 ? value : "";
+              const hour = Number(String(value).split(":")[0]);
+              return hour % 4 === 0 ? String(value) : "";
             }}
           />
-          <YAxis tick={{ fill: "#52606d", fontSize: 12 }} />
+
+          <YAxis
+            tick={{ fill: "#52606d", fontSize: 12 }}
+            tickFormatter={(value) => formatPrice(value)}
+          />
+
           <Tooltip
             contentStyle={{
               backgroundColor: "#ffffff",
@@ -86,16 +98,17 @@ export default function PriceChart({ data }: PriceChartProps) {
                 numericValue > avgPrice
                   ? "#dc2626"
                   : numericValue < avgPrice
-                  ? "#0369a1"
-                  : "#334155";
+                    ? "#0369a1"
+                    : "#334155";
 
               return (
                 <span style={{ color }}>
-                  {numericValue.toFixed(3)} SEK/kWh
+                  {formatPrice(numericValue)} SEK/kWh
                 </span>
               );
             }}
           />
+
           <Line
             type="monotone"
             dataKey="price"

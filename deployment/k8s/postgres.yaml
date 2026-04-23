@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: elvakt-postgres-pvc
+  namespace: elvakt
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elvakt-postgres
+  namespace: elvakt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: elvakt-postgres
+  template:
+    metadata:
+      labels:
+        app: elvakt-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: elvakt-postgres-secret
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - elvakt
+                - -d
+                - elvakt
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: elvakt-postgres-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elvakt-postgres
+  namespace: elvakt
+spec:
+  selector:
+    app: elvakt-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

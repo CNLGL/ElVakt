@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import math
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,9 @@ from app.core.config import settings
 from app.core.security import hash_password, verify_password
 from app.database import models, session
 from app.services import price_service
+
+UTC_TZ = ZoneInfo("UTC")
+SWEDEN_TZ = ZoneInfo("Europe/Stockholm")
 
 models.Base.metadata.create_all(bind=session.engine)
 
@@ -36,15 +40,59 @@ def clean_postcode(postcode: str) -> str:
     return clean_code
 
 
+def sweden_now() -> datetime:
+    return datetime.now(SWEDEN_TZ)
+
+
+def sweden_day_start(value: datetime | None = None) -> datetime:
+    current = value or sweden_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=SWEDEN_TZ)
+    return current.astimezone(SWEDEN_TZ).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+
+def to_utc_naive(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=SWEDEN_TZ)
+    return value.astimezone(UTC_TZ).replace(tzinfo=None)
+
+
+def db_utc_to_sweden(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC_TZ)
+    return value.astimezone(SWEDEN_TZ)
+
+
+def serialize_price(price: models.ElectricityPrice) -> dict:
+    return {
+        "id": price.id,
+        "region": price.region,
+        "price": price.price,
+        "start_time": db_utc_to_sweden(price.start_time),
+        "end_time": db_utc_to_sweden(price.end_time),
+    }
+
+
 def get_prices_for_postcode(postcode: str, db: Session):
     target_region = utils.get_region_by_postcode(postcode, db)
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+    today_start_sweden = sweden_day_start()
+    end_sweden = today_start_sweden + timedelta(days=2)
+
+    today_start_utc = to_utc_naive(today_start_sweden)
+    end_utc = to_utc_naive(end_sweden)
 
     prices = (
         db.query(models.ElectricityPrice)
         .filter(
             models.ElectricityPrice.region == target_region,
-            models.ElectricityPrice.start_time >= today_start,
+            models.ElectricityPrice.start_time >= today_start_utc,
+            models.ElectricityPrice.start_time < end_utc,
         )
         .order_by(models.ElectricityPrice.start_time.asc())
         .all()
@@ -56,20 +104,27 @@ def get_prices_for_postcode(postcode: str, db: Session):
             detail="Bu bolge icin guncel fiyat verisi bulunamadi.",
         )
 
-    return {"city": postcode, "region": target_region, "prices": prices}
+    return {
+        "city": postcode,
+        "region": target_region,
+        "prices": [serialize_price(price) for price in prices],
+    }
 
 
 def find_price_for_time(db: Session, postcode: str, measured_at: datetime) -> float | None:
     region = utils.get_region_by_postcode(postcode, db)
+    measured_at_utc = to_utc_naive(measured_at)
+
     price = (
         db.query(models.ElectricityPrice)
         .filter(
             models.ElectricityPrice.region == region,
-            models.ElectricityPrice.start_time <= measured_at,
-            models.ElectricityPrice.end_time > measured_at,
+            models.ElectricityPrice.start_time <= measured_at_utc,
+            models.ElectricityPrice.end_time > measured_at_utc,
         )
         .first()
     )
+
     return price.price if price else None
 
 
@@ -79,18 +134,21 @@ def get_device_or_404(db: Session, user_id: int, device_id: int):
         .filter(models.Device.user_id == user_id, models.Device.id == device_id)
         .first()
     )
+
     if not device:
         raise HTTPException(status_code=404, detail="Device not found.")
+
     return device
 
 
 @app.get("/health")
 def health_check(db: Session = Depends(session.get_db)):
     cache_count = db.query(models.CityRegionCache).count()
+
     return {
         "status": "online",
         "cached_postcodes": cache_count,
-        "timestamp": datetime.now(),
+        "timestamp": sweden_now(),
     }
 
 
@@ -136,6 +194,7 @@ def register_user(payload: schemas.UserCreate, db: Session = Depends(session.get
         postcode=clean_code,
         is_default=True,
     )
+
     db.add(default_location)
     db.commit()
 
@@ -162,6 +221,7 @@ def login_user(payload: schemas.UserLogin, db: Session = Depends(session.get_db)
 @app.get("/users/{user_id}/prices", response_model=schemas.PriceResponse)
 def get_user_prices(user_id: int, db: Session = Depends(session.get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
@@ -174,6 +234,7 @@ def get_user_prices(user_id: int, db: Session = Depends(session.get_db)):
 )
 def get_user_locations(user_id: int, db: Session = Depends(session.get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
@@ -198,6 +259,7 @@ def create_user_location(
     db: Session = Depends(session.get_db),
 ):
     user = db.query(models.User).filter(models.User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
@@ -250,6 +312,7 @@ def delete_user_location(
 @app.get("/users/{user_id}/devices", response_model=list[schemas.DeviceResponse])
 def get_user_devices(user_id: int, db: Session = Depends(session.get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
@@ -268,10 +331,12 @@ def create_user_device(
     db: Session = Depends(session.get_db),
 ):
     user = db.query(models.User).filter(models.User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
     saved_location_id = payload.saved_location_id
+
     if saved_location_id is not None:
         location = (
             db.query(models.SavedLocation)
@@ -281,6 +346,7 @@ def create_user_device(
             )
             .first()
         )
+
         if not location:
             raise HTTPException(status_code=404, detail="Saved location not found.")
 
@@ -335,12 +401,13 @@ def create_test_device_readings(
 ):
     device = get_device_or_404(db, user_id, device_id)
     user = db.query(models.User).filter(models.User.id == user_id).first()
+
     postcode = user.postcode
 
     if device.saved_location:
         postcode = device.saved_location.postcode
 
-    day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    day_start = sweden_day_start().replace(tzinfo=None)
 
     db.query(models.DeviceReading).filter(
         models.DeviceReading.device_id == device_id,
@@ -354,6 +421,7 @@ def create_test_device_readings(
 
         if 6 <= hour <= 8:
             base_power += 550
+
         if 17 <= hour <= 21:
             base_power += 850
 
@@ -392,17 +460,20 @@ def get_device_readings(
 ):
     get_device_or_404(db, user_id, device_id)
 
-    now = datetime.now()
+    now = sweden_now()
+
     if period == "month":
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     else:
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
+    start_naive = start.replace(tzinfo=None)
+
     readings = (
         db.query(models.DeviceReading)
         .filter(
             models.DeviceReading.device_id == device_id,
-            models.DeviceReading.measured_at >= start,
+            models.DeviceReading.measured_at >= start_naive,
         )
         .order_by(models.DeviceReading.measured_at.asc())
         .all()
@@ -431,15 +502,18 @@ def get_device_readings(
 def manual_update_prices(db: Session = Depends(session.get_db)):
     try:
         added_today = price_service.fetch_and_save_prices(
-            db, target_date=datetime.now()
+            db,
+            target_date=sweden_now(),
         )
         added_tomorrow = price_service.fetch_and_save_prices(
-            db, target_date=datetime.now() + timedelta(days=1)
+            db,
+            target_date=sweden_now() + timedelta(days=1),
         )
 
         return {
             "status": "success",
             "added_total": added_today + added_tomorrow,
         }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

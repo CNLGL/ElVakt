@@ -1,0 +1,85 @@
+pipeline {
+    agent any
+
+    environment {
+        BACKEND_IMAGE = "elvakt-backend:local"
+        FRONTEND_IMAGE = "elvakt-frontend:local"
+        K8S_NAMESPACE = "elvakt"
+    }
+
+    stages {
+        stage("Checkout") {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage("Backend Install") {
+            steps {
+                dir("backend") {
+                    sh "python3 -m venv .venv"
+                    sh ". .venv/bin/activate && pip install --upgrade pip"
+                    sh ". .venv/bin/activate && pip install -r requirements.txt"
+                }
+            }
+        }
+
+        stage("Backend Smoke Test") {
+            steps {
+                dir("backend") {
+                    sh ". .venv/bin/activate && python -m compileall app"
+                }
+            }
+        }
+
+        stage("Frontend Install") {
+            steps {
+                dir("frontend") {
+                    sh "npm ci"
+                }
+            }
+        }
+
+        stage("Frontend Build") {
+            steps {
+                dir("frontend") {
+                    sh "npm run build"
+                }
+            }
+        }
+
+        stage("Docker Build") {
+            steps {
+                sh "docker build -t ${BACKEND_IMAGE} -f deployment/docker/backend.Dockerfile backend"
+                sh "docker build -t ${FRONTEND_IMAGE} -f deployment/docker/frontend.Dockerfile frontend"
+            }
+        }
+
+        stage("Deploy To Kubernetes") {
+            steps {
+                sh "kubectl apply -f deployment/k8s/namespace.yaml"
+                sh "kubectl apply -f deployment/k8s/postgres-secret.yaml"
+                sh "kubectl apply -f deployment/k8s/backend-secret.yaml"
+                sh "kubectl apply -f deployment/k8s/backend-config.yaml"
+                sh "kubectl apply -f deployment/k8s/frontend-config.yaml"
+                sh "kubectl apply -f deployment/k8s/postgres.yaml"
+                sh "kubectl apply -f deployment/k8s/backend.yaml"
+                sh "kubectl apply -f deployment/k8s/frontend.yaml"
+
+                sh "kubectl rollout status deployment/elvakt-postgres -n ${K8S_NAMESPACE}"
+                sh "kubectl rollout status deployment/elvakt-backend -n ${K8S_NAMESPACE}"
+                sh "kubectl rollout status deployment/elvakt-frontend -n ${K8S_NAMESPACE}"
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "ElVakt deployed successfully."
+        }
+
+        failure {
+            echo "ElVakt pipeline failed."
+        }
+    }
+}

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elvakt-frontend-config
+  namespace: elvakt
+data:
+  NEXT_PUBLIC_API_URL: http://localhost:30080
